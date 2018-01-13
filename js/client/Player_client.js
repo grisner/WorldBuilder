@@ -125,6 +125,7 @@ Player.prototype.teleport = function(){
     var cell = Game.computeTileCoords(this.x,this.y);
     var door = Game.doors.getFirst(cell.x,cell.y);
     if(door){
+    // TODO: om door.to.c pekar på snnan karta, byt karta
         this.position.set(door.to.x, door.to.y);
         if(this.isPlayer) {
             if (door.camera && !door.follow) { // if the camera cannot follow the player but has to be fixed at specific coordinates
