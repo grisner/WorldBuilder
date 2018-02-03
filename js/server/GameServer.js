@@ -77,6 +77,116 @@ GameServer.makeIDmap = function(collection,map){
 // =========================
 // Code related to reading map and setting up world
 
+GameServer.mapFiles = [
+    {
+        "mapFile": './assets/maps/minimap_server.json'
+
+    },
+    {
+        "mapFile": './assets/maps/minimap_server.1.json'
+    }
+];
+
+GameServer.mapObjects = [];
+var mapId = 0;
+
+GameServer.readMapFile = function(mapId) {
+    var mapPath = GameServer.mapFiles[mapId].mapFile;
+    var mapObject = {};
+
+    fs.readFile(mapPath, 'utf8', function (err, data) {
+        if (err) throw err;
+        mapObject.map = JSON.parse(data);
+        mapObject.objects = {};
+        mapObject.layers = [];
+        mapObject.tilesets = {};
+
+        for (var l = 0; l < mapObject.map.layers.length; l++) {
+            var layer = mapObject.map.layers[l];
+            if (layer.type == 'objectgroup') {
+                console.log(layer.name)
+                mapObject.objects[layer.name] = layer.objects;
+            } else if (layer.type == 'tilelayer') {
+                mapObject.layers.push(layer.data);
+            }
+        }
+        for (var t = 0; t < mapObject.map.tilesets.length; t++) {
+            var tileset = mapObject.map.tilesets[t];
+            mapObject.tilesets[tileset.name] = tileset.tileproperties;
+        }
+
+        // Iterate over all tiles and work out AOIs and collisions
+        AOIutils.nbAOIhorizontal = Math.ceil(mapObject.map.width/GameServer.AOIwidth);
+        mapObject.AOIs = {}; // Maps AOI id to AOI object
+        mapObject.dirtyAOIs = new Set(); // Set of AOI's whose update package have changes since last update
+        mapObject.AOIfromTiles = new spaceMap(); // map tiles coordinates to AOI id (e.g. the tile (3,2) is in AOI 0)
+        mapObject.collisionGrid = [];
+        for (var y = 0; y < mapObject.map.height; y++) {
+            var col = [];
+            for (var x = 0; x < mapObject.map.width; x++) {
+                // Work out AOI
+                if(x%GameServer.AOIwidth == 0 && y%GameServer.AOIheight == 0){ // Create a new AOI at these coordinates
+                    var area = new AOI(x,y,GameServer.AOIwidth,GameServer.AOIheight);
+                    mapObject.AOIs[area.id] = area;
+                }
+                mapObject.AOIfromTiles.add(x,y,mapObject.AOIs[getIDfromCoords(x,y)]);
+                // Work out collisions
+                var collide = false;
+                for (var l = 0; l < mapObject.layers.length; l++) {
+                    var tile = mapObject.layers[l][y * mapObject.map.width + x];
+                    if (tile) {
+                        // The original BrowserQuest Tiled file doesn't use a collision layer; rather, properties are added to the
+                        // tileset to indicate which tiles causes collisions or not. Which is why we have to check in the tileProperties
+                        // if a given tile has the property "c" or not (= collision)
+                        var tileProperties = mapObject.tilesets['tilesheet'][tile - 1];
+                        if (tileProperties) {
+                            if (tileProperties.hasOwnProperty('c')) {
+                                collide = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                col.push(+collide); // "+" to convert boolean to int
+            }
+            mapObject.collisionGrid.push(col);
+        }
+        mapObject.PFgrid = new PF.Grid(GameServer.collisionGrid);
+        mapObject.pathfinder = new PF.AStarFinder();
+
+        mapId++;
+        console.log("map " + mapId + " read");
+        GameServer.mapObjects.push(mapObject);
+
+        // TODO: Vi kan inte använda mapId eftersom detta är en callbackfunktion där mapId antagligen har hunnit ändras från åkallan till genomförandet
+        if(GameServer.mapObjects.length == 1) {
+            GameServer.map = GameServer.mapObjects[0].map;
+            GameServer.objects = GameServer.mapObjects[0].objects;
+            GameServer.layers = GameServer.mapObjects[0].layers;
+            GameServer.tilesets = GameServer.mapObjects[0].tilesets;
+            GameServer.AOIs = GameServer.mapObjects[0].AOIs;
+            GameServer.dirtyAOIs = GameServer.mapObjects[0].dirtyAOIs;
+            GameServer.AOIfromTiles = GameServer.mapObjects[0].AOIfromTiles;
+            GameServer.collisionGrid = GameServer.mapObjects[0].collisionGrid;
+            GameServer.PFgrid = GameServer.mapObjects[0].PFgrid;
+            GameServer.pathfinder = GameServer.mapObjects[0].pathfinder;
+        }
+        
+        if(GameServer.mapObjects.length == GameServer.mapFiles.length) {
+            GameServer.setUpDoors();
+            GameServer.setUpEntities();
+            GameServer.setUpChests();
+            GameServer.setUpRoaming();
+            GameServer.setLoops();
+            console.log('Map read');
+            GameServer.mapReady = true;
+        }
+    });
+
+}
+
+
+
 GameServer.readMap = function(){
     GameServer.db = JSON.parse(fs.readFileSync('./assets/json/db.json').toString()); // Info about monsters, items, etc.
     GameServer.db.entities = JSON.parse(fs.readFileSync('./assets/json/entities_server.json').toString()); // locations of monsters, objects, chests...
@@ -86,7 +196,11 @@ GameServer.readMap = function(){
     GameServer.db.itemsIDmap = {}; // Make a map to easily fetch string keys based on numerical id's
     GameServer.makeIDmap(GameServer.db.items,GameServer.db.itemsIDmap);
 
-    fs.readFile('./assets/maps/minimap_server.json', 'utf8', function (err, data) {
+    GameServer.readMapFile(0);
+    //GameServer.readMapFile(1);
+
+
+    /*fs.readFile('./assets/maps/minimap_server.0.json', 'utf8', function (err, data) {
         if (err) throw err;
         GameServer.map = JSON.parse(data);
         GameServer.objects = {};
@@ -96,6 +210,8 @@ GameServer.readMap = function(){
         for (var l = 0; l < GameServer.map.layers.length; l++) {
             var layer = GameServer.map.layers[l];
             if (layer.type == 'objectgroup') {
+                console.log(layer.name)
+                console.log(layer.objects)
                 GameServer.objects[layer.name] = layer.objects;
             } else if (layer.type == 'tilelayer') {
                 GameServer.layers.push(layer.data);
@@ -152,44 +268,57 @@ GameServer.readMap = function(){
         GameServer.setLoops();
         console.log('Map read');
         GameServer.mapReady = true;
-    });
+    });*/
 };
 
+/**
+ * Det borde inte behövas mer än att man cyklar igenom alla GameServer.mapObjects.doors och kör samma som här
+ */
 GameServer.setUpDoors = function(){ // Set up teleports
-    GameServer.doors = new spaceMap();
-    for (var d = 0; d < GameServer.objects.doors.length; d++) {
-        var door = GameServer.objects.doors[d];
-        var position = GameServer.computeTileCoords(door.x, door.y);
-        GameServer.doors.add(position.x, position.y, {
-            to: {x:door.properties.x, y:door.properties.y},
-            camera: (door.properties.hasOwnProperty('cx') ?
-            {x:door.properties.cx, y:door.properties.cy}
-                : null),
-            orientation: door.properties.o
-        });
+    for(var z in GameServer.mapObjects) {
+        GameServer.doors = new spaceMap();
+        for (var d = 0; d < GameServer.mapObjects[z].objects.doors.length; d++) {
+            var door = GameServer.mapObjects[z].objects.doors[d];
+            var position = GameServer.computeTileCoords(door.x, door.y);
+            GameServer.doors.add(position.x, position.y, {
+                to: {x:door.properties.x, y:door.properties.y, z:door.properties.z},
+                camera: (door.properties.hasOwnProperty('cx') ?
+                {x:door.properties.cx, y:door.properties.cy}
+                    : null),
+                orientation: door.properties.o
+            }, door.z);
+        }
     }
 };
 
+
+/**
+ * Eftersom spacemap-klassen numera stödjer z så borde det gå att utnyttja det för att skilja 
+ * de olika kartornas entities åt
+ */
 GameServer.setUpEntities = function(){ // Set up monsters & items
     GameServer.playersMap = new spaceMap();
     GameServer.items = new spaceMap();
     GameServer.monsters = new spaceMap();
     GameServer.monstersTable = {};
-    for (var d = 0; d < GameServer.objects.entities.length; d++) {
-        var entity = GameServer.objects.entities[d];
-        if (!GameServer.db.entities.hasOwnProperty(entity.gid - 1961)) continue;
-        var entityInfo = GameServer.db.entities[entity.gid - 1961];
-        var position = GameServer.computeTileCoords(entity.x, entity.y);
-        if (entityInfo.npc) {
-            GameServer.collisionGrid[position.y][position.x] = 1;
-        } else if (entityInfo.item) {
-            var item = new Item(position.x,position.y-1,entityInfo.sprite,true,false,false); // respawn, not chest, not loot
-            GameServer.addAtLocation(item);
-        } else if (entityInfo.monster) {
-            GameServer.addMonster(position,entityInfo.sprite);
+    for(var z in GameServer.mapObjects) {
+        for (var d = 0; d < GameServer.mapObjects[z].objects.entities.length; d++) {
+            var entity = GameServer.mapObjects[z].objects.entities[d];
+            if (!GameServer.db.entities.hasOwnProperty(entity.gid - 1961)) continue;
+            var entityInfo = GameServer.db.entities[entity.gid - 1961];
+            var position = GameServer.computeTileCoords(entity.x, entity.y);
+            if (entityInfo.npc) {
+                GameServer.mapObjects[z].collisionGrid[position.y][position.x] = 1;
+            } else if (entityInfo.item) {
+                var item = new Item(position.x,position.y-1,entityInfo.sprite,true,false,false); // respawn, not chest, not loot
+                GameServer.addAtLocation(item);
+            } else if (entityInfo.monster) {
+                GameServer.addMonster(position,entityInfo.sprite);
+            }
         }
     }
 };
+
 
 GameServer.addMonster = function(position,sprite){ // Create a monster object and add it to all relevant data structures
     // position are the tile coordinates at which to create the monster
@@ -200,8 +329,8 @@ GameServer.addMonster = function(position,sprite){ // Create a monster object an
 };
 
 GameServer.setUpChests = function(){ // Sets up chests and chest areas
-    for (var d = 0; d < GameServer.objects.chests.length; d++) {
-        var chest = GameServer.objects.chests[d];
+    for (var d = 0; d < GameServer.mapObjects[z].objects.chests.length; d++) {
+        var chest = GameServer.mapObjects[z].objects.chests[d];
         var position = GameServer.computeTileCoords(chest.x, chest.y);
         var chest = new Item(position.x,position.y,chest.properties.items,true,true,false); // respawn, chest, not loot
         GameServer.addAtLocation(chest);
@@ -209,8 +338,8 @@ GameServer.setUpChests = function(){ // Sets up chests and chest areas
 
     // Chest areas are areas where a chest will spawn if all monsters are killed
     GameServer.chestareas = {};
-    for (var d = 0; d < GameServer.objects.chestareas.length; d++) {
-        var area = GameServer.objects.chestareas[d];
+    for (var d = 0; d < GameServer.mapObjects[z].objects.chestareas.length; d++) {
+        var area = GameServer.mapObjects[z].objects.chestareas[d];
         var chestarea = new ChestArea(area.properties,GameServer.spawnHiddenChest);
         GameServer.chestareas[d] = chestarea;
         // Compute the size of the area
@@ -219,7 +348,7 @@ GameServer.setUpChests = function(){ // Sets up chests and chest areas
         // Count all monsters within that area, to configure the chest area properly
         for(var x = topleft.x; x < bottomright.x; x++) {
             for (var y = topleft.y; y < bottomright.y; y++) {
-                var monster = GameServer.monsters.getFirst(x,y);
+                var monster = GameServer.mapObjects[z].monsters.getFirst(x,y);
                 if(monster){
                     monster.chestArea = chestarea;
                     chestarea.incrementAll();
@@ -683,10 +812,14 @@ GameServer.updatePlayers = function(){ //Function responsible for setting up and
 // Code related to AOI management
 
 GameServer.clearAOIs = function(){
-    GameServer.dirtyAOIs.forEach(function(aoi){
-        GameServer.AOIs[aoi].clear();
-    });
-    GameServer.dirtyAOIs.clear();
+    
+    for(var z = 0; z < GameServer.mapObjects.length; z++) {
+        
+        GameServer.mapObjects[z].dirtyAOIs.forEach(function(aoi){
+            GameServer.mapObjects[z].AOIs[aoi].clear();
+        });
+        GameServer.mapObjects[z].dirtyAOIs.clear();
+    }
 };
 
 GameServer.listAOIsFromSocket = function(socketID){

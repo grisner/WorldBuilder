@@ -24,6 +24,8 @@
  socket.broadcast.to(socketid).emit('message', 'for your eyes only');
  */
 
+var mongoServer = '10.0.0.4';
+var mongoPort = 27017;
 var express = require('express');
 var app = express();
 var server = require('http').Server(app);
@@ -72,8 +74,8 @@ if(myArgs.heroku){ // --heroku flag to behave according to Heroku's specs
     mongoHost = 'heroku_4tv68zls:'+myArgs.pass+'@ds141368.mlab.com:41368';
     mongoDBName = 'heroku_4tv68zls';
 }else {
-    var mongoPort = (myArgs.mongoPort || 27017);
-    var mongoServer = (myArgs.mongoServer || 'localhost');
+    var mongoPort = (myArgs.mongoPort || mongoPort);
+    var mongoServer = (myArgs.mongoServer || mongoServer);
     mongoHost = mongoServer+':'+mongoPort;
     mongoDBName = 'phaserQuest';
 }
